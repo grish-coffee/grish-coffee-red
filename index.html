@@ -227,9 +227,15 @@
   .btn-add { background: #d62828; color: white; }
   .btn-redeem { background: #2e7d32; color: white; }
   .btn-reset { background: #7a0c0c; color: white; }
+  .btn:disabled { opacity: 0.45; cursor: default; }
   .msg { text-align: center; font-size: 13px; margin-top: 10px; min-height: 18px; color: #8b0000; font-weight: 600; }
   .loading { text-align: center; color: white; padding: 40px 0; }
   .name-form input { width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #f0c15c; font-size: 15px; margin: 10px 0; text-align: center; }
+
+  .scan-banner {
+    text-align: center; background: linear-gradient(135deg, #4caf50, #2e7d32); color: white;
+    padding: 10px; border-radius: 12px; font-weight: 700; margin-top: 14px; font-size: 15px;
+  }
 </style>
 </head>
 <body>
@@ -240,6 +246,11 @@
 <script>
 const STAFF_PIN = "2903"; // אפשר לשנות קוד סודי לצוות
 const DB_URL = "https://grishcoffee-1fc8a-default-rtdb.firebaseio.com";
+
+/* ---- סריקה עצמית של הלקוח (ללא מעורבות צוות) ---- */
+const SCAN_CODE = "GRISH-COFFEE-SCAN"; // הטקסט שמוצפן בברקוד/QR הקבוע שמודפס בקופה
+const SCAN_COOLDOWN_MS = 30 * 60 * 1000; // מרווח חובה בין סריקה לסריקה, מונע ניצול לרעה
+const EXTRA_WINDOW_MS = 3 * 60 * 1000;   // חלון זמן שבו כפתור "קפה נוסף" זמין אחרי סריקה
 
 function genId() {
   return Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
@@ -288,6 +299,66 @@ async function saveCard(card) {
 
 let currentCard = null;
 let currentId = null;
+let scanTickTimer = null;
+let justAddedStamp = false;
+
+function scanCooldownLeft() {
+  if (!currentCard) return 0;
+  const last = currentCard.lastScanAt || 0;
+  return SCAN_COOLDOWN_MS - (Date.now() - last);
+}
+
+function extraAvailable() {
+  if (!currentCard) return false;
+  return !currentCard.extraUsed && Date.now() < (currentCard.extraAvailableUntil || 0);
+}
+
+function fmtRemaining(ms) {
+  const totalSec = Math.max(0, Math.ceil(ms / 1000));
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return m + ":" + (s < 10 ? "0" : "") + s;
+}
+
+async function customerAddStamp(source) {
+  const now = Date.now();
+  if (source === "scan") {
+    if (scanCooldownLeft() > 0) return false;
+    currentCard.lastScanAt = now;
+    currentCard.extraAvailableUntil = now + EXTRA_WINDOW_MS;
+    currentCard.extraUsed = false;
+  } else if (source === "extra") {
+    if (!extraAvailable()) return false;
+    currentCard.extraUsed = true;
+  } else {
+    return false;
+  }
+  if (currentCard.count >= 10) return false;
+  currentCard.count += 1;
+  currentCard.totalLifetime = (currentCard.totalLifetime || 0) + 1;
+  currentCard.history.push(now);
+  await saveCard(currentCard);
+  if (source === "scan") justAddedStamp = true;
+  renderCard(document.getElementById("app")); // re-render from local state; render() would re-fetch and could race a second rapid call
+  return true;
+}
+
+// נקרא פעם אחת בטעינת העמוד. הברקוד הקבוע בקופה מקושר לכתובת עם ?scan=<SCAN_CODE> -
+// כניסה לעמוד דרך הקישור הזה מוסיפה חותמת אוטומטית (בכפוף לצינון), בלי צורך בכפתור או במצלמה בתוך העמוד.
+async function handleScanEntry(isNew) {
+  const scanParam = getParams().get("scan");
+  if (scanParam !== SCAN_CODE) return;
+
+  const url = new URL(window.location.href);
+  url.searchParams.delete("scan");
+  window.history.replaceState({}, "", url.toString());
+
+  if (isNew) {
+    try { sessionStorage.setItem("pendingScanStamp", "1"); } catch (e) {}
+  } else {
+    await customerAddStamp("scan");
+  }
+}
 
 async function getOrCreateId() {
   const params = getParams();
@@ -333,6 +404,8 @@ async function render() {
     if (currentCard.totalLifetime === undefined) currentCard.totalLifetime = currentCard.count || 0;
     if (currentCard.freeCount === undefined) currentCard.freeCount = 0;
     if (currentCard.history === undefined) currentCard.history = [];
+
+    await handleScanEntry(isNew);
 
     if (isNew) {
       renderNameForm(app);
@@ -386,7 +459,13 @@ async function saveName() {
   const val = document.getElementById("nameInput").value.trim();
   currentCard.name = val;
   await saveCard(currentCard);
-  render();
+  let pending = false;
+  try { pending = sessionStorage.getItem("pendingScanStamp") === "1"; sessionStorage.removeItem("pendingScanStamp"); } catch (e) {}
+  if (pending) {
+    await customerAddStamp("scan");
+  } else {
+    render();
+  }
 }
 
 function confettiHtml() {
@@ -407,12 +486,20 @@ function renderCard(app) {
   const freeReady = count >= 10;
   const link = buildLink(currentCard.id);
   const tier = tierInfo(total);
+  const cooldownLeft = scanCooldownLeft();
+  const extraOpen = extraAvailable();
+
+  clearTimeout(scanTickTimer);
+  if (cooldownLeft > 0) scanTickTimer = setTimeout(render, 30 * 1000);
 
   let cupsHtml = "";
   for (let i = 0; i < 10; i++) {
     const filled = i < count;
     cupsHtml += `<div class="cup ${filled ? 'filled' : ''}">${filled ? '☕' : ''}</div>`;
   }
+
+  const showBanner = justAddedStamp;
+  justAddedStamp = false; // one-shot: only show the "stamp added" banner on the render that follows a scan
 
   app.innerHTML = `
     ${brandHtml()}
@@ -431,6 +518,19 @@ function renderCard(app) {
         : `<div class="status">${count} מתוך 10 · עוד ${10 - count} לקפה חינם</div>`
       }
       ${currentCard.freeCount > 0 ? `<div class="hint">🏆 כבר קיבלת ${currentCard.freeCount} קפה חינם עד היום</div>` : ''}
+
+      ${showBanner ? `<div class="scan-banner">✓ נוספה לך חותמת!</div>` : ''}
+
+      ${!freeReady ? `
+      ${extraOpen ? `
+      <div class="btn-row" style="margin-top:14px;">
+        <button class="btn btn-redeem" onclick="customerAddStamp('extra')">☕ קניתי גם קפה נוסף</button>
+      </div>` : ''}
+      ${cooldownLeft > 0 ? `<div class="hint">אפשר לצבור חותמת נוספת בעוד ${fmtRemaining(cooldownLeft)}</div>` : ''}
+      ` : ''}
+
+      <div class="hint">כדי לצבור חותמת, סרקו עם מצלמת הטלפון את הברקוד שבקופה.</div>
+
       <div class="qr-wrap">
         <img src="${qrImg(link)}" width="180" height="180" alt="QR" />
       </div>
