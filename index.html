@@ -251,6 +251,7 @@ const DB_URL = "https://grishcoffee-1fc8a-default-rtdb.firebaseio.com";
 const SCAN_CODE = "GRISH-COFFEE-SCAN"; // הטקסט שמוצפן בברקוד/QR הקבוע שמודפס בקופה
 const SCAN_COOLDOWN_MS = 30 * 60 * 1000; // מרווח חובה בין סריקה לסריקה, מונע ניצול לרעה
 const EXTRA_WINDOW_MS = 3 * 60 * 1000;   // חלון זמן שבו כפתור "קפה נוסף" זמין אחרי סריקה
+const EXTRA_CODE = "7"; // ספרה שהצוות אומר ללקוח כדי לאשר קפה שני - מונע לחיצה חופשית על הכפתור
 
 function genId() {
   return Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
@@ -341,6 +342,18 @@ async function customerAddStamp(source) {
   if (source === "scan") justAddedStamp = true;
   renderCard(document.getElementById("app")); // re-render from local state; render() would re-fetch and could race a second rapid call
   return true;
+}
+
+// כפתור "קפה נוסף" דורש ספרת אישור (EXTRA_CODE) כדי שלא יהיה נגיש ללחיצה חופשית -
+// הצוות אומר את הספרה ללקוח כשבאמת נקנו 2 קפה בקנייה אחת.
+function requestExtraStamp() {
+  const code = prompt("קוד לאישור קפה נוסף (מהצוות):");
+  if (code === null) return;
+  if (code.trim() !== EXTRA_CODE) {
+    alert("קוד שגוי");
+    return;
+  }
+  customerAddStamp("extra");
 }
 
 // נקרא פעם אחת בטעינת העמוד. הברקוד הקבוע בקופה מקושר לכתובת עם ?scan=<SCAN_CODE> -
@@ -524,7 +537,7 @@ function renderCard(app) {
       ${!freeReady ? `
       ${extraOpen ? `
       <div class="btn-row" style="margin-top:14px;">
-        <button class="btn btn-redeem" onclick="customerAddStamp('extra')">☕ קניתי גם קפה נוסף</button>
+        <button class="btn btn-redeem" onclick="requestExtraStamp()">☕ קניתי גם קפה נוסף</button>
       </div>` : ''}
       ${cooldownLeft > 0 ? `<div class="hint">אפשר לצבור חותמת נוספת בעוד ${fmtRemaining(cooldownLeft)}</div>` : ''}
       ` : ''}
