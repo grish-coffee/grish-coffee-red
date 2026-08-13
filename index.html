@@ -563,40 +563,57 @@ function renderCard(app) {
           <button class="btn btn-add" onclick="staffLogin()">כניסה</button>
         </div>
         <div id="staffActions" style="display:${staffAuthenticated ? 'block' : 'none'}; margin-top:14px;">
+
+          ${vipList.length ? `
+          <div style="margin-bottom:14px;">
+            <label>👑 לקוחות VIP</label>
+            <div id="vipResults">
+              ${vipList.map(c => `
+                <div class="result-item" onclick="goToCard('${c.id}')">
+                  <span>${c.name || '(ללא שם)'}</span>
+                  <span>👑 ${c.totalLifetime || 0}</span>
+                </div>
+              `).join("")}
+            </div>
+          </div>` : ''}
+
           <label>מספר קפה: ${count}/10 · סה"כ: ${total}</label>
           <div class="btn-row">
             <button class="btn btn-add" onclick="addStamp()">➕ הוספת קפה</button>
             ${freeReady ? `<button class="btn btn-redeem" onclick="redeemFree()">✅ מימוש קפה חינם</button>` : ''}
           </div>
 
-          <div style="margin-top:14px; border-top:1px solid #eee; padding-top:14px;">
-            <label>עריכת שם הלקוח הנוכחי</label>
-            <input id="renameInput" value="${currentCard.name || ''}" placeholder="שם הלקוח" />
-            <div class="btn-row">
-              <button class="btn btn-add" onclick="staffRenameCustomer()">💾 שמירת שם</button>
-            </div>
-          </div>
+          <button class="btn btn-reset" style="width:100%; margin-top:14px;" onclick="toggleEditPanel()">✏️ עריכת לקוח</button>
 
-          <div class="btn-row" style="margin-top:14px;">
-            <button class="btn btn-reset" onclick="resetCard()">איפוס כרטיסייה</button>
-            <button class="btn btn-reset" onclick="staffDeleteCustomer()">🗑 מחיקת לקוח</button>
-          </div>
-
-          <div style="margin-top:18px; border-top:1px solid #eee; padding-top:14px;">
-            <label>➕ הוספת לקוח חדש</label>
+          <div id="editPanel" style="display:${editPanelOpen ? 'block' : 'none'}; margin-top:14px; border-top:1px solid #eee; padding-top:14px;">
+            <label>שינוי שם (לקוח נוכחי)</label>
             <div class="search-row">
-              <input id="newCustName" placeholder="שם הלקוח החדש" />
-              <button class="btn btn-add" onclick="staffAddCustomer()">יצירה</button>
+              <input id="renameInput" value="${currentCard.name || ''}" placeholder="שם הלקוח" />
+              <button class="btn btn-add" onclick="staffRenameCustomer()">שמירה</button>
+            </div>
+
+            <div style="margin-top:14px;">
+              <label>הוספת לקוח חדש</label>
+              <div class="search-row">
+                <input id="newCustName" placeholder="שם הלקוח החדש" />
+                <button class="btn btn-add" onclick="staffAddCustomer()">יצירה</button>
+              </div>
+            </div>
+
+            <div style="margin-top:14px;">
+              <label>🔍 חיפוש כרטיסייה לפי שם</label>
+              <div class="search-row">
+                <input id="searchInput" placeholder="הקלידי שם..." oninput="searchCards()" />
+              </div>
+              <div id="searchResults"></div>
+            </div>
+
+            <div class="btn-row" style="margin-top:14px;">
+              <button class="btn btn-reset" onclick="resetCard()">איפוס כרטיסייה</button>
+              <button class="btn btn-reset" onclick="staffDeleteCustomer()">🗑 מחיקת לקוח</button>
             </div>
           </div>
 
-          <div style="margin-top:18px; border-top:1px solid #eee; padding-top:14px;">
-            <label>🔍 חיפוש כרטיסייה לפי שם</label>
-            <div class="search-row">
-              <input id="searchInput" placeholder="הקלידי שם..." oninput="searchCards()" />
-            </div>
-            <div id="searchResults"></div>
-          </div>
           <button class="btn btn-reset" style="width:100%; margin-top:14px;" onclick="staffLogout()">🔒 יציאה מצוות (נעילה)</button>
         </div>
         <div class="msg" id="staffMsg"></div>
@@ -606,18 +623,44 @@ function renderCard(app) {
 }
 
 let staffAuthenticated = false;
+let editPanelOpen = false;
+let vipList = [];
 
 function toggleStaff() {
   document.getElementById("staffPanel").classList.toggle("open");
 }
 
-function staffLogin() {
+function toggleEditPanel() {
+  editPanelOpen = !editPanelOpen;
+  renderCard(document.getElementById("app"));
+}
+
+async function loadVipList() {
+  try {
+    const res = await fetch(`${DB_URL}/cards.json`);
+    const all = await res.json();
+    const list = [];
+    if (all) {
+      for (const key in all) {
+        const c = all[key];
+        if (c && (c.totalLifetime || 0) >= 30) list.push(c);
+      }
+    }
+    list.sort((a, b) => (b.totalLifetime || 0) - (a.totalLifetime || 0));
+    vipList = list.slice(0, 8);
+  } catch (e) {
+    vipList = [];
+  }
+}
+
+async function staffLogin() {
   const pin = document.getElementById("pinInput").value;
   const msg = document.getElementById("staffMsg");
   if (pin === STAFF_PIN) {
     staffAuthenticated = true;
-    document.getElementById("staffActions").style.display = "block";
     msg.textContent = "";
+    await loadVipList();
+    renderCard(document.getElementById("app"));
   } else {
     staffAuthenticated = false;
     msg.textContent = "קוד שגוי";
@@ -626,6 +669,7 @@ function staffLogin() {
 
 function staffLogout() {
   staffAuthenticated = false;
+  editPanelOpen = false;
   render();
 }
 
@@ -640,6 +684,7 @@ async function addStamp() {
   currentCard.history.push(Date.now());
   await saveCard(currentCard);
   staffAuthenticated = true; // stays logged in through this render cycle
+  await loadVipList();
   render();
 }
 
@@ -659,7 +704,19 @@ async function resetCard() {
   currentCard.freeCount = 0;
   currentCard.history = [];
   await saveCard(currentCard);
+  await loadVipList();
   render();
+}
+
+function renderVipSection() {
+  const el = document.getElementById("vipResults");
+  if (!el) return;
+  el.innerHTML = vipList.map(c => `
+    <div class="result-item" onclick="goToCard('${c.id}')">
+      <span>${c.name || '(ללא שם)'}</span>
+      <span>👑 ${c.totalLifetime || 0}</span>
+    </div>
+  `).join("");
 }
 
 async function staffRenameCustomer() {
@@ -667,6 +724,7 @@ async function staffRenameCustomer() {
   const input = document.getElementById("renameInput");
   currentCard.name = (input && input.value || "").trim();
   await saveCard(currentCard);
+  await loadVipList();
   render();
 }
 
@@ -702,6 +760,8 @@ async function staffDeleteFromSearch(id) {
   if (!staffAuthenticated) return;
   if (!confirm("למחוק את הלקוח הזה לצמיתות?")) return;
   await deleteCardById(id);
+  await loadVipList();
+  renderVipSection();
   runSearch();
 }
 
