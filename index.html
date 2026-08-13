@@ -251,7 +251,7 @@ const DB_URL = "https://grishcoffee-1fc8a-default-rtdb.firebaseio.com";
 const SCAN_CODE = "GRISH-COFFEE-SCAN"; // הטקסט שמוצפן בברקוד/QR הקבוע שמודפס בקופה
 const SCAN_COOLDOWN_MS = 30 * 60 * 1000; // מרווח חובה בין סריקה לסריקה, מונע ניצול לרעה
 const EXTRA_WINDOW_MS = 3 * 60 * 1000;   // חלון זמן שבו כפתור "קפה נוסף" זמין אחרי סריקה
-const EXTRA_CODE = "7"; // ספרה שהצוות אומר ללקוח כדי לאשר קפה שני - מונע לחיצה חופשית על הכפתור
+const STAFF_CONFIRM_CODE = "7"; // ספרה שהצוות אומר ללקוח כדי לאשר רכישה - מונע הוספת קפה עצמית בלי קנייה
 
 function genId() {
   return Math.random().toString(36).slice(2, 8) + Date.now().toString(36).slice(-4);
@@ -344,16 +344,30 @@ async function customerAddStamp(source) {
   return true;
 }
 
-// כפתור "קפה נוסף" דורש ספרת אישור (EXTRA_CODE) כדי שלא יהיה נגיש ללחיצה חופשית -
+// כפתור "קפה נוסף" דורש ספרת אישור כדי שלא יהיה נגיש ללחיצה חופשית -
 // הצוות אומר את הספרה ללקוח כשבאמת נקנו 2 קפה בקנייה אחת.
 function requestExtraStamp() {
   const code = prompt("קוד לאישור קפה נוסף (מהצוות):");
   if (code === null) return;
-  if (code.trim() !== EXTRA_CODE) {
+  if (code.trim() !== STAFF_CONFIRM_CODE) {
     alert("קוד שגוי");
     return;
   }
   customerAddStamp("extra");
+}
+
+// מסלול חלופי לסריקה: מי ששומר את הקישור האישי בטלפון יכול להוסיף חותמת בלחיצה,
+// בלי לסרוק שוב - אבל עדיין דורש ספרת אישור מהצוות ועדיין כפוף לצינון של הסריקה,
+// כדי שאי אפשר יהיה להוסיף קפה בלי רכישה אמיתית.
+function requestManualStamp() {
+  if (scanCooldownLeft() > 0) return;
+  const code = prompt("קוד לאישור רכישה (מהצוות):");
+  if (code === null) return;
+  if (code.trim() !== STAFF_CONFIRM_CODE) {
+    alert("קוד שגוי");
+    return;
+  }
+  customerAddStamp("scan");
 }
 
 // נקרא פעם אחת בטעינת העמוד. הברקוד הקבוע בקופה מקושר לכתובת עם ?scan=<SCAN_CODE> -
@@ -535,14 +549,18 @@ function renderCard(app) {
       ${showBanner ? `<div class="scan-banner">✓ נוספה לך חותמת!</div>` : ''}
 
       ${!freeReady ? `
-      ${extraOpen ? `
+      ${cooldownLeft <= 0 ? `
       <div class="btn-row" style="margin-top:14px;">
+        <button class="btn btn-add" onclick="requestManualStamp()">☕ אישור רכישת קפה</button>
+      </div>` : ''}
+      ${extraOpen ? `
+      <div class="btn-row" style="margin-top:8px;">
         <button class="btn btn-redeem" onclick="requestExtraStamp()">☕ קניתי גם קפה נוסף</button>
       </div>` : ''}
       ${cooldownLeft > 0 ? `<div class="hint">אפשר לצבור חותמת נוספת בעוד ${fmtRemaining(cooldownLeft)}</div>` : ''}
       ` : ''}
 
-      <div class="hint">כדי לצבור חותמת, סרקו עם מצלמת הטלפון את הברקוד שבקופה.</div>
+      <div class="hint">כדי לצבור חותמת: סרקו עם מצלמת הטלפון את הברקוד שבקופה, או לחצו "אישור רכישת קפה" והזינו את הקוד שהצוות נותן לכם.</div>
 
       <div class="qr-wrap">
         <img src="${qrImg(link)}" width="180" height="180" alt="QR" />
