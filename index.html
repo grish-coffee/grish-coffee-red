@@ -541,7 +541,7 @@ function renderCard(app) {
         ${freeReady ? confettiHtml() : ''}
       </div>
       ${freeReady
-        ? `<div class="free">🎉 מגיע לך קפה חינם! תראי את זה לצוות</div>`
+        ? `<div class="free">🎁 מגיע לך קפה חינם! תראי את זה לצוות</div>`
         : `<div class="status">${count} מתוך 10 · עוד ${10 - count} לקפה חינם</div>`
       }
       ${currentCard.freeCount > 0 ? `<div class="hint">🏆 כבר קיבלת ${currentCard.freeCount} קפה חינם עד היום</div>` : ''}
@@ -614,7 +614,7 @@ function renderCard(app) {
             </div>
 
             <div style="margin-top:14px;">
-              <label>📋 כל הלקוחות</label>
+              <label>📋 כל הלקוחות <span id="allCustomersCount" style="font-weight:400; color:#b5442e;">(סה"כ ${allCustomers.length} לקוחות)</span></label>
               <div id="allCustomersResults" style="max-height:260px; overflow-y:auto; border:1px solid #eee; border-radius:8px; padding:6px;">
                 ${allCustomers.length ? allCustomers.map(c => customerRowHtml(c)).join("") : `<div class="msg">טוען...</div>`}
               </div>
@@ -678,6 +678,7 @@ function customerRowHtml(c) {
       </div>
 
       <div class="btn-row" style="margin-top:10px;">
+        ${c.id !== currentCard.id ? `<button class="btn btn-add" onclick="event.stopPropagation(); staffSwitchToCustomer('${c.id}')">🔄 בחירה כפרופיל פעיל</button>` : `<span class="hint" style="margin:0;">זו הכרטיסייה הפעילה כרגע</span>`}
         <button class="btn btn-reset" onclick="event.stopPropagation(); staffDeleteCustomerById('${c.id}')">🗑 מחיקה</button>
       </div>
     </div>` : ''}
@@ -730,10 +731,13 @@ async function loadAllCustomers() {
 
 function renderAllCustomersSection() {
   const el = document.getElementById("allCustomersResults");
-  if (!el) return;
-  el.innerHTML = allCustomers.length
-    ? allCustomers.map(c => customerRowHtml(c)).join("")
-    : `<div class="msg">אין עדיין לקוחות</div>`;
+  if (el) {
+    el.innerHTML = allCustomers.length
+      ? allCustomers.map(c => customerRowHtml(c)).join("")
+      : `<div class="msg">אין עדיין לקוחות</div>`;
+  }
+  const countEl = document.getElementById("allCustomersCount");
+  if (countEl) countEl.textContent = `(סה"כ ${allCustomers.length} לקוחות)`;
 }
 
 async function staffLogin() {
@@ -835,6 +839,27 @@ async function staffSetCountById(id) {
   renderAllCustomersSection();
   runSearch();
   if (id === currentCard.id) renderCard(document.getElementById("app"));
+}
+
+// מעבר "פרופיל פעיל" בלי לצאת מפאנל הצוות ובלי לאבד את ההתחברות - כדי שאפשר יהיה
+// להוסיף קפה / לממש קפה חינם ללקוח שנבחר מהרשימה דרך הכפתורים הרגילים למעלה.
+async function staffSwitchToCustomer(id) {
+  if (!staffAuthenticated) return;
+  const card = await loadCard(id);
+  if (!card) return;
+  if (card.totalLifetime === undefined) card.totalLifetime = card.count || 0;
+  if (card.freeCount === undefined) card.freeCount = 0;
+  if (card.history === undefined) card.history = [];
+  currentCard = card;
+  currentId = id;
+  expandedCustomerId = null;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set("id", id);
+    window.history.replaceState({}, "", url.toString());
+  } catch (e) {}
+  renderCard(document.getElementById("app"));
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 async function staffAddCustomer() {
