@@ -541,7 +541,7 @@ function renderCard(app) {
         ${freeReady ? confettiHtml() : ''}
       </div>
       ${freeReady
-        ? `<div class="free">🎉 מגיע לך קפה חינם! תראי את זה לצוות</div>`
+        ? `<div class="free">🎁 מגיע לך קפה חינם! תראי את זה לצוות</div>`
         : `<div class="status">${count} מתוך 10 · עוד ${10 - count} לקפה חינם</div>`
       }
       ${currentCard.freeCount > 0 ? `<div class="hint">🏆 כבר קיבלת ${currentCard.freeCount} קפה חינם עד היום</div>` : ''}
@@ -614,7 +614,7 @@ function renderCard(app) {
             </div>
 
             <div style="margin-top:14px;">
-              <label>📋 כל הלקוחות</label>
+              <label>📋 כל הלקוחות <span id="allCustomersCount" style="font-weight:400; color:#b5442e;">(סה"כ ${allCustomers.length} לקוחות)</span></label>
               <div id="allCustomersResults" style="max-height:260px; overflow-y:auto; border:1px solid #eee; border-radius:8px; padding:6px;">
                 ${allCustomers.length ? allCustomers.map(c => customerRowHtml(c)).join("") : `<div class="msg">טוען...</div>`}
               </div>
@@ -654,10 +654,11 @@ async function toggleEditPanel() {
 // לחיצה על הלקוח פותחת/סוגרת מיני-פאנל עם שינוי שם ומחיקה, בלי לנווט משם.
 function customerRowHtml(c) {
   const expanded = expandedCustomerId === c.id;
+  const pendingFree = (c.count || 0) >= 10;
   return `
     <div class="result-item" onclick="toggleCustomerOptions('${c.id}')">
       <span>${c.name || '(ללא שם)'}</span>
-      <span>☕ ${c.count || 0}/10 · סה"כ ${c.totalLifetime || 0}</span>
+      <span>${pendingFree ? '🎁 ממתין למימוש · ' : '☕ ' + (c.count || 0) + '/10 · '}סה"כ ${c.totalLifetime || 0}</span>
     </div>
     ${expanded ? `
     <div style="background:#FFFBF2; border:1px solid #eee; border-radius:8px; padding:10px; margin:-4px 0 8px;">
@@ -666,7 +667,18 @@ function customerRowHtml(c) {
         <input id="rowRename_${c.id}" value="${c.name || ''}" placeholder="שם" />
         <button class="btn btn-add" onclick="event.stopPropagation(); staffRenameCustomerById('${c.id}')">שמירה</button>
       </div>
-      <div class="btn-row" style="margin-top:8px;">
+
+      <div style="margin-top:10px;">
+        <label>עדכון מספר קפה (0-10)</label>
+        <div class="search-row">
+          <input id="rowCount_${c.id}" type="number" min="0" max="10" value="${c.count || 0}" />
+          <button class="btn btn-add" onclick="event.stopPropagation(); staffSetCountById('${c.id}')">עדכון</button>
+        </div>
+        ${pendingFree ? `<div class="hint" style="margin-top:4px;">🎁 מגיע ללקוח קפה חינם שטרם מומש</div>` : ''}
+      </div>
+
+      <div class="btn-row" style="margin-top:10px;">
+        ${c.id !== currentCard.id ? `<button class="btn btn-add" onclick="event.stopPropagation(); staffSwitchToCustomer('${c.id}')">🔄 בחירה כפרופיל פעיל</button>` : `<span class="hint" style="margin:0;">זו הכרטיסייה הפעילה כרגע</span>`}
         <button class="btn btn-reset" onclick="event.stopPropagation(); staffDeleteCustomerById('${c.id}')">🗑 מחיקה</button>
       </div>
     </div>` : ''}
@@ -719,10 +731,13 @@ async function loadAllCustomers() {
 
 function renderAllCustomersSection() {
   const el = document.getElementById("allCustomersResults");
-  if (!el) return;
-  el.innerHTML = allCustomers.length
-    ? allCustomers.map(c => customerRowHtml(c)).join("")
-    : `<div class="msg">אין עדיין לקוחות</div>`;
+  if (el) {
+    el.innerHTML = allCustomers.length
+      ? allCustomers.map(c => customerRowHtml(c)).join("")
+      : `<div class="msg">אין עדיין לקוחות</div>`;
+  }
+  const countEl = document.getElementById("allCustomersCount");
+  if (countEl) countEl.textContent = `(סה"כ ${allCustomers.length} לקוחות)`;
 }
 
 async function staffLogin() {
@@ -764,6 +779,11 @@ async function redeemFree() {
   if (!staffAuthenticated) return;
   currentCard.count = 0;
   currentCard.freeCount = (currentCard.freeCount || 0) + 1;
+  // clear the scan cooldown left over from the 10th stamp, so the customer isn't
+  // locked out of self-service (scan / "אישור רכישת קפה") at the start of their next card
+  currentCard.lastScanAt = 0;
+  currentCard.extraAvailableUntil = 0;
+  currentCard.extraUsed = false;
   await saveCard(currentCard);
   render();
 }
@@ -802,6 +822,49 @@ async function staffRenameCustomerById(id) {
   renderAllCustomersSection();
   runSearch();
   if (id === currentCard.id) renderCard(document.getElementById("app"));
+}
+
+// עריכה ישירה של מספר החותמות - לתקן טעויות או לעדכן ידנית (למשל "לקוח הביא כבר 4 חותמות").
+// לא נוגע בסה"כ ההיסטורי (totalLifetime), רק בהתקדמות הנוכחית לקראת הקפה החינם הבא.
+async function staffSetCountById(id) {
+  if (!staffAuthenticated) return;
+  const input = document.getElementById(`rowCount_${id}`);
+  let val = parseInt(input && input.value, 10);
+  if (isNaN(val)) { alert("מספר לא תקין"); return; }
+  val = Math.max(0, Math.min(10, val));
+  const card = (id === currentCard.id) ? currentCard : await loadCard(id);
+  if (!card) return;
+  card.count = val;
+  await saveCard(card);
+  if (id === currentCard.id) currentCard.count = val;
+  expandedCustomerId = null;
+  await loadVipList();
+  await loadAllCustomers();
+  renderVipSection();
+  renderAllCustomersSection();
+  runSearch();
+  if (id === currentCard.id) renderCard(document.getElementById("app"));
+}
+
+// מעבר "פרופיל פעיל" בלי לצאת מפאנל הצוות ובלי לאבד את ההתחברות - כדי שאפשר יהיה
+// להוסיף קפה / לממש קפה חינם ללקוח שנבחר מהרשימה דרך הכפתורים הרגילים למעלה.
+async function staffSwitchToCustomer(id) {
+  if (!staffAuthenticated) return;
+  const card = await loadCard(id);
+  if (!card) return;
+  if (card.totalLifetime === undefined) card.totalLifetime = card.count || 0;
+  if (card.freeCount === undefined) card.freeCount = 0;
+  if (card.history === undefined) card.history = [];
+  currentCard = card;
+  currentId = id;
+  expandedCustomerId = null;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set("id", id);
+    window.history.replaceState({}, "", url.toString());
+  } catch (e) {}
+  renderCard(document.getElementById("app"));
+  window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
 async function staffAddCustomer() {
