@@ -779,6 +779,11 @@ async function redeemFree() {
   if (!staffAuthenticated) return;
   currentCard.count = 0;
   currentCard.freeCount = (currentCard.freeCount || 0) + 1;
+  // clear the scan cooldown left over from the 10th stamp, so the customer isn't
+  // locked out of self-service (scan / "אישור רכישת קפה") at the start of their next card
+  currentCard.lastScanAt = 0;
+  currentCard.extraAvailableUntil = 0;
+  currentCard.extraUsed = false;
   await saveCard(currentCard);
   render();
 }
