@@ -302,6 +302,22 @@ let currentCard = null;
 let currentId = null;
 let scanTickTimer = null;
 let justAddedStamp = false;
+let justEarnedFree = false;
+
+// ממלא ברירות מחדל לכרטיסים ישנים, וממיר כרטיסים ישנים שנשארו על count>=10
+// (מהמודל הקודם, שבו הכרטיסייה נחסמה עד מימוש) למודל החדש: הכרטיסייה מתחילה
+// מחדש אוטומטית והקפה החינם נצבר בנפרד ב-pendingFree.
+function normalizeCard(card) {
+  if (card.totalLifetime === undefined) card.totalLifetime = card.count || 0;
+  if (card.freeCount === undefined) card.freeCount = 0;
+  if (card.history === undefined) card.history = [];
+  if (card.pendingFree === undefined) card.pendingFree = 0;
+  if (card.count >= 10) {
+    card.pendingFree += Math.floor(card.count / 10);
+    card.count = card.count % 10;
+  }
+  return card;
+}
 
 function scanCooldownLeft() {
   if (!currentCard) return 0;
@@ -334,10 +350,15 @@ async function customerAddStamp(source) {
   } else {
     return false;
   }
-  if (currentCard.count >= 10) return false;
   currentCard.count += 1;
   currentCard.totalLifetime = (currentCard.totalLifetime || 0) + 1;
   currentCard.history.push(now);
+  if (currentCard.count >= 10) {
+    // הכרטיסייה מתחילה מחדש מיד - הקפה החינם מצטבר בנפרד ולא חוסם המשך צבירה
+    currentCard.count = 0;
+    currentCard.pendingFree = (currentCard.pendingFree || 0) + 1;
+    justEarnedFree = true;
+  }
   await saveCard(currentCard);
   if (source === "scan") justAddedStamp = true;
   renderCard(document.getElementById("app")); // re-render from local state; render() would re-fetch and could race a second rapid call
@@ -425,12 +446,10 @@ async function render() {
     currentCard = await loadCard(currentId);
     const isNew = !currentCard;
     if (!currentCard) {
-      currentCard = { id: currentId, name: "", count: 0, totalLifetime: 0, freeCount: 0, history: [], createdAt: Date.now() };
+      currentCard = { id: currentId, name: "", count: 0, totalLifetime: 0, freeCount: 0, pendingFree: 0, history: [], createdAt: Date.now() };
       await saveCard(currentCard);
     }
-    if (currentCard.totalLifetime === undefined) currentCard.totalLifetime = currentCard.count || 0;
-    if (currentCard.freeCount === undefined) currentCard.freeCount = 0;
-    if (currentCard.history === undefined) currentCard.history = [];
+    normalizeCard(currentCard);
 
     await handleScanEntry(isNew);
 
@@ -510,7 +529,7 @@ function confettiHtml() {
 function renderCard(app) {
   const count = currentCard.count;
   const total = currentCard.totalLifetime || 0;
-  const freeReady = count >= 10;
+  const pendingFree = currentCard.pendingFree || 0;
   const link = buildLink(currentCard.id);
   const tier = tierInfo(total);
   const cooldownLeft = scanCooldownLeft();
@@ -527,6 +546,8 @@ function renderCard(app) {
 
   const showBanner = justAddedStamp;
   justAddedStamp = false; // one-shot: only show the "stamp added" banner on the render that follows a scan
+  const showEarnedFree = justEarnedFree;
+  justEarnedFree = false; // one-shot: celebrate the moment a free coffee is earned, not every render while it's pending
 
   app.innerHTML = `
     ${brandHtml()}
@@ -538,17 +559,19 @@ function renderCard(app) {
       </div>
       <div class="confetti-wrap">
         <div class="cups">${cupsHtml}</div>
-        ${freeReady ? confettiHtml() : ''}
+        ${showEarnedFree ? confettiHtml() : ''}
       </div>
-      ${freeReady
-        ? `<div class="free">🎁 מגיע לך קפה חינם! תראי את זה לצוות</div>`
-        : `<div class="status">${count} מתוך 10 · עוד ${10 - count} לקפה חינם</div>`
+      <div class="status">${count} מתוך 10 · עוד ${10 - count} לקפה חינם</div>
+
+      ${showEarnedFree ? `<div class="scan-banner">🎉 מזל טוב! צברת קפה חינם 🎁</div>` : ''}
+      ${pendingFree > 0
+        ? `<div class="free">🎁 ${pendingFree > 1 ? `יש לך ${pendingFree} קפה חינם` : 'יש לך קפה חינם'} שממתין למימוש - אין למהר, תראי את זה לצוות מתי שנוח לך</div>`
+        : ''
       }
       ${currentCard.freeCount > 0 ? `<div class="hint">🏆 כבר קיבלת ${currentCard.freeCount} קפה חינם עד היום</div>` : ''}
 
       ${showBanner ? `<div class="scan-banner">✓ נוספה לך חותמת!</div>` : ''}
 
-      ${!freeReady ? `
       ${cooldownLeft <= 0 ? `
       <div class="btn-row" style="margin-top:14px;">
         <button class="btn btn-add" onclick="requestManualStamp()">☕ אישור רכישת קפה</button>
@@ -558,7 +581,6 @@ function renderCard(app) {
         <button class="btn btn-redeem" onclick="requestExtraStamp()">☕ קניתי גם קפה נוסף</button>
       </div>` : ''}
       ${cooldownLeft > 0 ? `<div class="hint">אפשר לצבור חותמת נוספת בעוד ${fmtRemaining(cooldownLeft)}</div>` : ''}
-      ` : ''}
 
       <div class="hint">כדי לצבור חותמת: סרקו עם מצלמת הטלפון את הברקוד שבקופה, או לחצו "אישור רכישת קפה" והזינו את הקוד שהצוות נותן לכם.</div>
 
@@ -590,10 +612,10 @@ function renderCard(app) {
             </div>
           </div>` : ''}
 
-          <label>מספר קפה: ${count}/10 · סה"כ: ${total}</label>
+          <label>מספר קפה: ${count}/10 · סה"כ: ${total}${pendingFree > 0 ? ` · 🎁 ממתין: ${pendingFree}` : ''}</label>
           <div class="btn-row">
             <button class="btn btn-add" onclick="addStamp()">➕ הוספת קפה</button>
-            ${freeReady ? `<button class="btn btn-redeem" onclick="redeemFree()">✅ מימוש קפה חינם</button>` : ''}
+            ${pendingFree > 0 ? `<button class="btn btn-redeem" onclick="redeemFree()">✅ מימוש קפה חינם</button>` : ''}
           </div>
 
           <button class="btn btn-reset" style="width:100%; margin-top:14px;" onclick="toggleEditPanel()">✏️ עריכת לקוח</button>
@@ -654,11 +676,11 @@ async function toggleEditPanel() {
 // לחיצה על הלקוח פותחת/סוגרת מיני-פאנל עם שינוי שם ומחיקה, בלי לנווט משם.
 function customerRowHtml(c) {
   const expanded = expandedCustomerId === c.id;
-  const pendingFree = (c.count || 0) >= 10;
+  const pendingFree = c.pendingFree || 0;
   return `
     <div class="result-item" onclick="toggleCustomerOptions('${c.id}')">
       <span>${c.name || '(ללא שם)'}</span>
-      <span>${pendingFree ? '🎁 ממתין למימוש · ' : '☕ ' + (c.count || 0) + '/10 · '}סה"כ ${c.totalLifetime || 0}</span>
+      <span>☕ ${c.count || 0}/10 · סה"כ ${c.totalLifetime || 0}${pendingFree > 0 ? ` · 🎁 ×${pendingFree}` : ''}</span>
     </div>
     ${expanded ? `
     <div style="background:#FFFBF2; border:1px solid #eee; border-radius:8px; padding:10px; margin:-4px 0 8px;">
@@ -669,12 +691,12 @@ function customerRowHtml(c) {
       </div>
 
       <div style="margin-top:10px;">
-        <label>עדכון מספר קפה (0-10)</label>
+        <label>עדכון מספר קפה (0-9)</label>
         <div class="search-row">
-          <input id="rowCount_${c.id}" type="number" min="0" max="10" value="${c.count || 0}" />
+          <input id="rowCount_${c.id}" type="number" min="0" max="9" value="${c.count || 0}" />
           <button class="btn btn-add" onclick="event.stopPropagation(); staffSetCountById('${c.id}')">עדכון</button>
         </div>
-        ${pendingFree ? `<div class="hint" style="margin-top:4px;">🎁 מגיע ללקוח קפה חינם שטרם מומש</div>` : ''}
+        ${pendingFree > 0 ? `<div class="hint" style="margin-top:4px;">🎁 מגיע ללקוח ${pendingFree > 1 ? pendingFree + ' קפה חינם' : 'קפה חינם'} שטרם מומש</div>` : ''}
       </div>
 
       <div class="btn-row" style="margin-top:10px;">
@@ -762,30 +784,29 @@ function staffLogout() {
 
 async function addStamp() {
   if (!staffAuthenticated) return;
-  if (currentCard.count >= 10) {
-    document.getElementById("staffMsg").textContent = "יש כבר קפה חינם ממתין - יש למצות אותו קודם";
-    return;
-  }
   currentCard.count += 1;
   currentCard.totalLifetime = (currentCard.totalLifetime || 0) + 1;
   currentCard.history.push(Date.now());
+  if (currentCard.count >= 10) {
+    currentCard.count = 0;
+    currentCard.pendingFree = (currentCard.pendingFree || 0) + 1;
+    justEarnedFree = true;
+  }
   await saveCard(currentCard);
   staffAuthenticated = true; // stays logged in through this render cycle
   await loadVipList();
-  render();
+  renderCard(document.getElementById("app")); // re-render from local state; render() would re-fetch and could race repeated clicks
 }
 
 async function redeemFree() {
   if (!staffAuthenticated) return;
-  currentCard.count = 0;
+  if (!(currentCard.pendingFree > 0)) return;
+  // ממש קפה חינם אחד - עצמאי לגמרי מהצבירה השוטפת (count), שכבר התאפסה והתחילה
+  // כרטיסייה חדשה ברגע שנצברה החותמת ה-10.
+  currentCard.pendingFree -= 1;
   currentCard.freeCount = (currentCard.freeCount || 0) + 1;
-  // clear the scan cooldown left over from the 10th stamp, so the customer isn't
-  // locked out of self-service (scan / "אישור רכישת קפה") at the start of their next card
-  currentCard.lastScanAt = 0;
-  currentCard.extraAvailableUntil = 0;
-  currentCard.extraUsed = false;
   await saveCard(currentCard);
-  render();
+  renderCard(document.getElementById("app"));
 }
 
 async function resetCard() {
@@ -794,10 +815,11 @@ async function resetCard() {
   currentCard.count = 0;
   currentCard.totalLifetime = 0;
   currentCard.freeCount = 0;
+  currentCard.pendingFree = 0;
   currentCard.history = [];
   await saveCard(currentCard);
   await loadVipList();
-  render();
+  renderCard(document.getElementById("app"));
 }
 
 function renderVipSection() {
@@ -831,7 +853,7 @@ async function staffSetCountById(id) {
   const input = document.getElementById(`rowCount_${id}`);
   let val = parseInt(input && input.value, 10);
   if (isNaN(val)) { alert("מספר לא תקין"); return; }
-  val = Math.max(0, Math.min(10, val));
+  val = Math.max(0, Math.min(9, val));
   const card = (id === currentCard.id) ? currentCard : await loadCard(id);
   if (!card) return;
   card.count = val;
@@ -852,9 +874,7 @@ async function staffSwitchToCustomer(id) {
   if (!staffAuthenticated) return;
   const card = await loadCard(id);
   if (!card) return;
-  if (card.totalLifetime === undefined) card.totalLifetime = card.count || 0;
-  if (card.freeCount === undefined) card.freeCount = 0;
-  if (card.history === undefined) card.history = [];
+  normalizeCard(card);
   currentCard = card;
   currentId = id;
   expandedCustomerId = null;
@@ -872,7 +892,7 @@ async function staffAddCustomer() {
   const input = document.getElementById("newCustName");
   const name = (input && input.value || "").trim();
   const newId = genId();
-  const card = { id: newId, name: name, count: 0, totalLifetime: 0, freeCount: 0, history: [], createdAt: Date.now() };
+  const card = { id: newId, name: name, count: 0, totalLifetime: 0, freeCount: 0, pendingFree: 0, history: [], createdAt: Date.now() };
   await saveCard(card);
   goToCard(newId);
 }
